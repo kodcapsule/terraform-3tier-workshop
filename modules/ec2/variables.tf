@@ -20,3 +20,8 @@ variable "security_groups" {
   description = "The IDs of the security groups to associate with the instance"
   type        = list(string)
 }
+
+variable "env" {
+  description = "The environment to deploy the instance in"
+  type        = string
+}

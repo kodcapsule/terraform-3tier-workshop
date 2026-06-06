@@ -19,6 +19,6 @@ resource "aws_instance" "server" {
   subnet_id = var.subnet_id
 
   tags = {
-    Name = "Terraform-Lab-Instance-dev"
+    Name = "Instance-${var.env}"
   }
 }
