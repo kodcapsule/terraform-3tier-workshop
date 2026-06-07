@@ -89,8 +89,8 @@ export AWS_DEFAULT_REGION="us-east-1"
 - **Database:** Amazon RDS for PostgreSQL 16
 - **Networking:** Amazon VPC, Subnets, Internet Gateway, NAT Gateway
 - **Security:** AWS Security Groups
-- **State Management:** Amazon S3 + DynamoDB (state locking)
-- **Community Modules:** `terraform-aws-modules/vpc`, `terraform-aws-modules/security-group`, `terraform-aws-modules/rds`
+- **State Management:** Amazon S3 
+- **Community Modules:**  `terraform-aws-modules/security-group`, `terraform-aws-modules/rds`
 
 ---
 
@@ -105,7 +105,7 @@ terraform-3tier-workshop/
 │   ├── 3-tier-architecture.png
 │   └── 3-tier-architecture-future-imp.png
 │
-├── state-bootstrap/                # One-time setup: S3 bucket + DynamoDB for remote state
+├── state-bootstrap/                # One-time setup: S3 bucket 
 │   ├── main.tf
 │   ├── variables.tf
 │   └── outputs.tf
@@ -126,7 +126,7 @@ terraform-3tier-workshop/
 │       ├── provider.tf             # AWS provider config
 │       ├── main.tf                 # Module calls and resource definitions
 │       ├── variables.tf            # Input variables
-│       ├── terraform.tfvars        # Variable values (do not commit secrets)
+│       ├── terraform.tfvars        # Variable values (optional) NOTE:(do not commit secrets)
 │       └── outputs.tf              # Environment outputs
 │
 ├── .gitignore
@@ -139,7 +139,7 @@ terraform-3tier-workshop/
 
 ## 🪣 Step 1 — Creating the S3 Backend Bucket
 
-Terraform state tracks everything it manages. By default, state is stored locally — which is unsafe for teams and risky for production. We bootstrap a **remote backend** using S3 (storage) and DynamoDB (state locking) before writing any environment code.
+Terraform state tracks everything it manages. By default, state is stored locally — which is unsafe for teams and risky for production. We bootstrap a **remote backend** using S3 (storage) before writing any environment code.
 
 > **Note:** The S3 bucket can be created in three ways: using the `state-bootstrap` Terraform config in this repo (recommended), via the AWS Console, or via the AWS CLI. All three approaches are shown below.
 
@@ -201,22 +201,6 @@ resource "aws_s3_bucket_public_access_block" "terraform_state" {
   restrict_public_buckets = true
 }
 
-# DynamoDB table for state locking — prevents concurrent apply conflicts
-resource "aws_dynamodb_table" "terraform_locks" {
-  name         = "${var.project_name}-terraform-locks"
-  billing_mode = "PAY_PER_REQUEST"
-  hash_key     = "LockID"
-
-  attribute {
-    name = "LockID"
-    type = "S"
-  }
-
-  tags = {
-    Name      = "${var.project_name}-terraform-locks"
-    ManagedBy = "terraform"
-  }
-}
 ```
 
 #### Option 2 — Using the AWS CLI
@@ -252,13 +236,6 @@ aws s3api put-public-access-block \
   --public-access-block-configuration \
     "BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true"
 
-# Create DynamoDB table for state locking
-aws dynamodb create-table \
-  --table-name my-project-terraform-locks \
-  --attribute-definitions AttributeName=LockID,AttributeType=S \
-  --key-schema AttributeName=LockID,KeyType=HASH \
-  --billing-mode PAY_PER_REQUEST \
-  --region $REGION
 ```
 
 #### Option 3 — Using the AWS Console
@@ -282,7 +259,7 @@ A Terraform module is simply a directory containing `.tf` files. The three-file 
 
 ### a. VPC Module
 
-The VPC module provisions the entire network layer: VPC, public/private subnets across 2 AZs, Internet Gateway, NAT Gateway, and route tables.
+The VPC module provisions the entire network layer: VPC, public/private subnets across 2 AZs, Internet Gateway,  and route tables and route table associations.
 
 ```
 modules/vpc/
@@ -295,7 +272,6 @@ Key design decisions in the VPC module:
 
 - **Two AZs minimum** — required by RDS and recommended for all production workloads
 - **Private subnets** for EC2 app tier and RDS — no direct internet exposure
-- **Single NAT Gateway** (cost-saving for dev; use one per AZ for prod)
 - **DB subnet group** created within the module so RDS can be deployed immediately
 
 ```hcl
@@ -318,7 +294,7 @@ output "db_subnet_group_name" { value = aws_db_subnet_group.this.name }
 
 ### b. EC2 Module
 
-The EC2 module provisions compute instances with configurable AMI, instance type, subnet placement, security group associations, and user data.
+The EC2 module provisions compute instances with configurable AMI, instance type, subnet placement, security group associations.
 
 ```
 modules/ec2/
@@ -340,7 +316,6 @@ variable "ami"                    { type = string }
 variable "instance_type"          { type = string  default = "t3.micro" }
 variable "subnet_id"              { type = string }
 variable "vpc_security_group_ids" { type = list(string) }
-variable "user_data"              { type = string  default = "" }
 variable "tags"                   { type = map(string) default = {} }
 ```
 
@@ -365,12 +340,13 @@ Remote state is configured in `backend.tf`. This file **cannot use variables** �
 # environment/dev/backend.tf
 
 terraform {
+  required_version = ">= 0.12"
   backend "s3" {
-    bucket         = "my-project-terraform-state"   # your S3 bucket name
-    key            = "dev/terraform.tfstate"         # unique key per environment
-    region         = "us-east-1"
-    dynamodb_table = "my-project-terraform-locks"    # DynamoDB table for locking
-    encrypt        = true
+    bucket       = "YOUR_BUCKET_NAME
+    key          = "dev/terraform.tfstate"
+    region       = "REGION"
+    encrypt      = true
+    use_lockfile = true
   }
 }
 ```
@@ -394,7 +370,7 @@ terraform {
 }
 
 provider "aws" {
-  region = var.aws_region
+  region = var.region
 
   default_tags {
     tags = {
@@ -416,29 +392,23 @@ provider "aws" {
 # --- VPC (custom module) ---
 module "dev_vpc" {
   source = "../../modules/vpc"
-
-  env_name        = var.env_name
-  vpc_cidr        = "10.0.0.0/16"
-  azs             = ["us-east-1a", "us-east-1b"]
-  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24"]
-  private_subnets = ["10.0.1.0/24", "10.0.2.0/24"]
 }
 
 # --- EC2 Private Instance (custom module) ---
-module "dev_ec2_private" {
-  source = "../../modules/ec2"
-
-  env_name               = var.env_name
-  ami                    = var.ec2_ami
-  instance_type          = "t3.micro"
-  subnet_id              = module.dev_vpc.private_subnet_ids[0]
-  vpc_security_group_ids = [module.ec2_private_security_group.security_group_id]
-
-  tags = {
-    Name = "${var.env_name}-private-ec2"
-    Tier = "application"
-  }
+module "web_server" {
+  source            = "../../modules/ec2"
+  availability_zone = module.dev_vpc.availability_zones[0]
+  subnet_id         = module.dev_vpc.public_subnet_id
+  security_groups   = [module.ec2_public_security_group.security_group_id]
 }
+
+module "app_server" {
+  source            = "../../modules/ec2"
+  availability_zone = module.dev_vpc.availability_zones[0]
+  subnet_id         = module.dev_vpc.private_app_subnet_ids
+  security_groups   = [module.ec2_private_security_group.security_group_id]
+}
+
 ```
 
 ### d. Using Community Modules from the Terraform Registry — Security Groups and RDS
@@ -446,40 +416,161 @@ module "dev_ec2_private" {
 Community modules from the [Terraform Registry](https://registry.terraform.io) let you adopt battle-tested patterns without writing everything from scratch.
 
 ```hcl
-# --- Security Group for Private EC2 (community module) ---
-module "ec2_private_security_group" {
-  source  = "terraform-aws-modules/security-group/aws"
+
+# ===== Security Group for public EC2 instance =============================================================
+module "ec2_public_security_group" {
+  source  = "terraform-aws-modules/security-group/aws//modules/http-80"
   version = "~> 5.0"
 
-  name        = "${var.env_name}-ec2-private-sg"
-  description = "Security group for private EC2 instances"
+  name        = "${var.env_name}-public-ec2-sg"
+  description = "Security group for public EC2 instances"
   vpc_id      = module.dev_vpc.vpc_id
 
+  # Allow HTTP and HTTPS from anywhere (public facing)
+  ingress_cidr_blocks = ["0.0.0.0/0"]
+
+  # Allow SSH only from your IP or a trusted CIDR
   ingress_with_cidr_blocks = [
     {
       from_port   = 22
       to_port     = 22
       protocol    = "tcp"
-      description = "SSH from VPN/bastion only"
-      cidr_blocks = var.allowed_ssh_cidr
+      description = "SSH access"
+      cidr_blocks = var.vpc_cidr # replace with your IP
+    },
+    {
+      from_port   = 443
+      to_port     = 443
+      protocol    = "tcp"
+      description = "HTTPS access"
+      cidr_blocks = "0.0.0.0/0"
     }
   ]
-  egress_rules = ["all-all"]
+
+  egress_rules = ["all-all"] # allow all outbound
+
+  tags = {
+    Name = "${var.env_name}-public-ec2-sg"
+  }
 }
 
-# --- Security Group for RDS (community module — PostgreSQL preset) ---
+# ===== Security Group for private EC2 instance ===============================================
+
+module "ec2_private_security_group" {
+  source  = "terraform-aws-modules/security-group/aws//modules/http-80"
+  version = "~> 5.0"
+
+  name        = "${var.env_name}-private-ec2-sg"
+  description = "Security group for private EC2 instances"
+  vpc_id      = module.dev_vpc.vpc_id
+  # Only allow HTTP traffic from the web security group
+  ingress_with_source_security_group_id = [
+    {
+      from_port                = 80
+      to_port                  = 80
+      protocol                 = "tcp"
+      description              = "HTTP from web server only"
+      source_security_group_id = module.ec2_public_security_group.security_group_id
+    },
+    {
+      from_port                = 443
+      to_port                  = 443
+      protocol                 = "tcp"
+      description              = "HTTPS from web server only"
+      source_security_group_id = module.ec2_public_security_group.security_group_id
+    }
+  ]
+
+  # SSH from within VPC only
+  ingress_with_cidr_blocks = [
+    {
+      from_port   = 22
+      to_port     = 22
+      protocol    = "tcp"
+      description = "SSH from VPC only"
+      cidr_blocks = var.vpc_cidr
+    }
+  ]
+
+  egress_rules = ["all-all"]
+
+  tags = {
+    Name = "${var.env_name}-private-ec2-sg"
+  }
+}
+
+
+
+module "dev_rds" {
+  source  = "terraform-aws-modules/rds/aws"
+  version = "~> 6.0"
+
+  identifier = "${var.env_name}-postgresql"
+
+  # Engine
+  engine               = "postgres"
+  engine_version       = "16"
+  family               = "postgres16"
+  major_engine_version = "16"
+  instance_class       = "db.t3.micro"
+
+  # Storage
+  allocated_storage     = 20
+  max_allocated_storage = 100
+  storage_encrypted     = true
+
+  # Credentials
+  db_name  = var.db_name
+  username = var.db_username
+  password = var.db_password
+  port     = 5432
+
+  # Network — same AZ as your EC2 instances
+  # db_subnet_group_name   = "${var.env_name}-db-subnet-group"
+  db_subnet_group_name   = module.dev_vpc.db_subnet_group_name
+  vpc_security_group_ids = [module.rds_postgresql_security_group.security_group_id]
+  availability_zone      = module.dev_vpc.availability_zones[0] # same AZ as EC2s
+  multi_az               = false
+
+  # Backups
+  backup_retention_period = 7
+  backup_window           = "03:00-04:00"
+  maintenance_window      = "Mon:04:00-Mon:05:00"
+
+  # Monitoring
+  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
+
+  # Other settings
+  deletion_protection      = false # set to true for production
+  skip_final_snapshot      = true  # set to false for production
+  delete_automated_backups = true
+
+  tags = {
+    Name = "${var.env_name}-postgresql"
+  }
+}
+
+
+
+
+
+# ===== Security Group for RDS instance ===============================================
+
+
+
+
 module "rds_postgresql_security_group" {
   source  = "terraform-aws-modules/security-group/aws//modules/postgresql"
   version = "~> 5.0"
 
   name        = "${var.env_name}-rds-postgresql-sg"
-  description = "Security group for RDS PostgreSQL — allows traffic from private EC2 only"
+  description = "Security group for RDS PostgreSQL - allows traffic from private EC2 only"
   vpc_id      = module.dev_vpc.vpc_id
 
-  ingress_rules       = []
-  ingress_cidr_blocks = []
+  ingress_rules       = [] # ← add this to disable default rules
+  ingress_cidr_blocks = [] # ← add this to clear any default CIDRs
 
-  # Only allow port 5432 from the private EC2 security group
+  # ✅ Only allow PostgreSQL (5432) from the private EC2 security group
   ingress_with_source_security_group_id = [
     {
       from_port                = 5432
@@ -489,49 +580,14 @@ module "rds_postgresql_security_group" {
       source_security_group_id = module.ec2_private_security_group.security_group_id
     }
   ]
+
   egress_rules = ["all-all"]
+
+  tags = {
+    Name = "${var.env_name}-rds-postgresql-sg"
+  }
 }
 
-# --- RDS PostgreSQL (community module) ---
-module "dev_rds" {
-  source  = "terraform-aws-modules/rds/aws"
-  version = "~> 6.0"
-
-  identifier = "${var.env_name}-postgresql"
-
-  engine               = "postgres"
-  engine_version       = "16"
-  family               = "postgres16"
-  major_engine_version = "16"
-  instance_class       = "db.t3.micro"
-
-  allocated_storage     = 20
-  max_allocated_storage = 100
-  storage_encrypted     = true
-
-  db_name  = var.db_name
-  username = var.db_username
-  password = var.db_password
-  port     = 5432
-
-  # Use the output reference — not a hardcoded string — so Terraform
-  # knows to create the subnet group before the RDS instance
-  db_subnet_group_name   = module.dev_vpc.db_subnet_group_name
-  vpc_security_group_ids = [module.rds_postgresql_security_group.security_group_id]
-
-  availability_zone = module.dev_vpc.availability_zones[0]
-  multi_az          = false
-
-  backup_retention_period = 7
-  backup_window           = "03:00-04:00"
-  maintenance_window      = "Mon:04:00-Mon:05:00"
-
-  enabled_cloudwatch_logs_exports = ["postgresql", "upgrade"]
-
-  deletion_protection      = false   # set true for production
-  skip_final_snapshot      = true    # set false for production
-  delete_automated_backups = true
-}
 ```
 
 > **Critical:** Always pass `db_subnet_group_name` as a **resource reference** (e.g. `module.dev_vpc.db_subnet_group_name`), never as a hardcoded string. A hardcoded string removes Terraform's ability to infer the dependency, which can cause `DBSubnetGroupNotFound` errors during `apply`.
@@ -543,7 +599,7 @@ module "dev_rds" {
 The following practices are applied throughout this workshop and are recommended for any production Terraform project.
 
 **State management**
-- Always use remote state with S3 + DynamoDB locking — never commit `.tfstate` files to Git
+- Always use remote state with S3  — never commit `.tfstate` files to Git
 - Use a separate state key per environment (`dev/terraform.tfstate`, `prod/terraform.tfstate`)
 - Enable S3 versioning so you can roll back to a previous state file if needed
 

@@ -1,5 +1,8 @@
+# environment/dev/provider.tf
 
 terraform {
+  required_version = ">= 1.5"
+
   required_providers {
     aws = {
       source  = "hashicorp/aws"
@@ -8,8 +11,15 @@ terraform {
   }
 }
 
-# Configure the AWS provider
 provider "aws" {
   region = var.region
 
+  default_tags {
+    tags = {
+      Environment = var.env_name
+      Project     = "terraform-3tier-workshop"
+      ManagedBy   = "terraform"
+    }
+  }
 }
+
